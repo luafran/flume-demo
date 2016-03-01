@@ -7,7 +7,6 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
-import java.util.Arrays;
 import java.util.Properties;
 
 /**
@@ -15,6 +14,9 @@ import java.util.Properties;
  */
 public class MySink extends AbstractSink implements Configurable {
     private String myProp;
+
+    Properties props;
+    Producer<String, String> producer;
 
 
     public void configure(Context context) {
@@ -24,17 +26,29 @@ public class MySink extends AbstractSink implements Configurable {
 
         // Store myProp for later retrieval by process() method
         this.myProp = myProp;
+
+        props = new Properties();
+        props.put("bootstrap.servers", "localhost:9092");
+        props.put("acks", "all");
+        props.put("retries", 0);
+        props.put("batch.size", 16384);
+        props.put("linger.ms", 1);
+        props.put("buffer.memory", 33554432);
+        props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
     }
 
     @Override public void start() {
         // Initialize the connection to the external repository (e.g. HDFS) that
         // this Sink will forward Events to ..
+        producer = new KafkaProducer(props);
     }
 
     @Override public void stop() {
         // Disconnect from the external respository and do any
         // additional cleanup (e.g. releasing resources or nulling-out
         // field values) ..
+        producer.close();
     }
 
     public Status process() throws EventDeliveryException {
@@ -45,43 +59,30 @@ public class MySink extends AbstractSink implements Configurable {
         Transaction txn = ch.getTransaction();
         txn.begin();
         try {
-            // This try clause includes whatever Channel operations you want to do
 
             Event event = ch.take();
+            if (event != null) {
 
-            // Send the Event to the external repository.
-            // storeSomeData(e);
+                String message = new String(event.getBody());
 
-            String message = new String(event.getBody());
+                ProducerRecord<String, String> producerRecord = new ProducerRecord<String, String>("test", "", "HEADER:" + event.getHeaders().toString() + " MESSAGE:" + message);
 
+                producer.send(producerRecord);
 
-            Properties props = new Properties();
-            props.put("bootstrap.servers", "localhost:9092");
-            props.put("acks", "all");
-            props.put("retries", 0);
-            props.put("batch.size", 16384);
-            props.put("linger.ms", 1);
-            props.put("buffer.memory", 33554432);
-            props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-            props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-
-            Producer<String, String> producer = new KafkaProducer(props);
-            ProducerRecord<String, String> producerRecord = new ProducerRecord<String, String>("test", "", "HEADER:" + event.getHeaders().toString() +" MESSAGE:"+message);
-
-            producer.send(producerRecord);
-
-            producer.close();
-
-
-            System.out.println("[SINK EVENT] HEADERS:"+ event.getHeaders().toString() + "  MESSAGE:"  +  message );
+                System.out.println("[SINK EVENT] HEADERS: " + event.getHeaders().toString() + "  MESSAGE: " + message);
+                status = Status.READY;
+            }
+            else {
+                status = Status.BACKOFF;
+            }
 
             txn.commit();
-            status = Status.READY;
+
         } catch (Throwable t) {
             txn.rollback();
-
             // Log exception, handle individual exceptions as needed
             System.out.println("[SINK EVENT ERROR] !!!!!!!!" + t.getMessage());
+            t.printStackTrace();
 
             status = Status.BACKOFF;
 
